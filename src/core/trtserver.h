@@ -134,9 +134,9 @@ typedef enum trtserver_allocatorregion_enum {
 /// the buffer. This value will be provided in the call to
 /// TRTSERVER_ResponseAllocatorReleaseFn_t.
 ///
-/// The function will be called for each result tensor, even if the
-/// 'byte_size' required for that tensor is zero. When 'byte_size' is
-/// zero the function does not need to allocate any memory but may
+/// The function will be called once for each result tensor, even if
+/// the 'byte_size' required for that tensor is zero. When 'byte_size'
+/// is zero the function does not need to allocate any memory but may
 /// perform other tasks associated with the result tensor. In this
 /// case the function should return success and set 'buffer' ==
 /// nullptr.

@@ -837,7 +837,7 @@ DelegatingInferResponseProvider::AllocateOutputBuffer(
   RETURN_IF_ERROR(CheckAndSetIfBufferedOutput(
       name, content, content_byte_size, content_shape, &output));
 
-  if (output->buffer_ == nullptr) {
+  if (output->ptr_ == nullptr) {
     void* buffer = nullptr;
     void* buffer_userp = nullptr;
 
@@ -852,8 +852,8 @@ DelegatingInferResponseProvider::AllocateOutputBuffer(
       return status;
     }
 
-    // If buffer size is zero the don't need to get a buffer back from
-    // the allocator, but if it sends one handle it correctly.
+    // If buffer size is zero then don't need to get a buffer back
+    // from the allocator, but if it sends one handle it correctly.
     if ((content_byte_size > 0) && (buffer == nullptr)) {
       return Status(
           RequestStatusCode::UNAVAILABLE,

@@ -54,21 +54,14 @@ namespace nvidia { namespace inferenceserver {
 namespace {
 class AsyncResources : public nvrpc::Resources {
  public:
-  explicit AsyncResources(
+  AsyncResources(
       const std::shared_ptr<TRTSERVER_Server>& server, int infer_threads,
-      int mgmt_threads)
-      : server_(server), mgmt_thread_pool_(mgmt_threads),
-        infer_thread_pool_(infer_threads)
-  {
-    TRTSERVER_Error* err = TRTSERVER_ServerId(server_.get(), &server_id_);
-    if (err != nullptr) {
-      server_id_ = "unknown:0";
-      TRTSERVER_ErrorDelete(err);
-    }
-  }
+      int mgmt_threads);
 
   TRTSERVER_Server* Server() const { return server_.get(); }
   const char* ServerId() const { return server_id_; }
+
+  TRTSERVER_ResponseAllocator* Allocator() const { return allocator_; }
 
   ThreadPool& GetMgmtThreadPool() { return mgmt_thread_pool_; }
   ThreadPool& GetInferThreadPool() { return infer_thread_pool_; }
@@ -77,12 +70,77 @@ class AsyncResources : public nvrpc::Resources {
   std::shared_ptr<TRTSERVER_Server> server_;
   const char* server_id_;
 
+  // The allocator that will be used to allocate buffers for the
+  // inference result tensors.
+  TRTSERVER_ResponseAllocator* allocator_;
+
   // We can and should get specific on thread affinity.  It might not
   // be as important on the frontend, but the backend threadpool
   // should be aligned with the respective devices.
   ThreadPool mgmt_thread_pool_;
   ThreadPool infer_thread_pool_;
 };
+
+AsyncResources::AsyncResources(
+    const std::shared_ptr<TRTSERVER_Server>& server, int infer_threads,
+    int mgmt_threads)
+    : server_(server), allocator_(nullptr), mgmt_thread_pool_(mgmt_threads),
+      infer_thread_pool_(infer_threads)
+{
+  TRTSERVER_Error* err = TRTSERVER_ServerId(server_.get(), &server_id_);
+  if (err != nullptr) {
+    server_id_ = "unknown:0";
+    TRTSERVER_ErrorDelete(err);
+  }
+
+  // Create the allocator that will be used to allocate buffers for
+  // the result tensors.
+  FAIL_IF_ERR(
+      TRTSERVER_ResponseAllocatorNew(
+          &allocator_, ResponseAlloc, ResponseRelease),
+      "creating response allocator");
+}
+
+AsyncResources::~AsyncResources()
+{
+  LOG_IF_ERR(
+      TRTSERVER_ResponseAllocatorDelete(allocator_),
+      "deleting response allocator");
+}
+
+static TRTSERVER_Error*
+AsyncResources::ResponseAlloc(
+    TRTSERVER_ResponseAllocator* allocator, void** buffer, void** buffer_userp,
+    const char* tensor_name, size_t byte_size,
+    TRTSERVER_Allocator_Region region, int64_t region_id, void* userp)
+{
+  InferResponse* response = reinterpret_cast<InferResponse*>(userp);
+
+  *buffer = nullptr;
+  *buffer_userp = nullptr;
+
+  // Called once for each result tensor in the inference request. Must
+  // always add a raw output into the response's list of outputs so
+  // that the number and order of raw output entries equals the output
+  // meta-data.
+  std::string* raw_output = response->add_raw_output();
+  if ((byte_size > 0) && (region == TRTSERVER_MEMORY_CPU)) {
+    raw_output->resize(byte_size);
+    *buffer = static_cast<void*>(&((*raw_output)[0]));
+  }
+
+  return nullptr;  // Success
+}
+
+static TRTSERVER_Error*
+AsyncResources::ResponseRelease(
+    TRTSERVER_ResponseAllocator* allocator, void* buffer, void* buffer_userp,
+    size_t byte_size, TRTSERVER_Allocator_Region region, int64_t region_id)
+{
+  // Don't do anything when releasing a buffer since ResponseAlloc
+  // wrote directly into the response protobuf.
+  return nullptr;  // Success
+}
 
 static std::shared_ptr<AsyncResources> g_Resources;
 
@@ -318,7 +376,9 @@ class InferBaseContext : public BaseContext<LifeCycle, AsyncResources> {
           err = TRTSERVER_ServerInferAsync(
               server, request_provider,
               nullptr /* http_response_provider_hack */,
-              &response /* grpc_response_provider_hack */, nullptr, nullptr,
+              &response /* grpc_response_provider_hack */,
+              g_Resources->Allocator(),
+              &response /* response_allocator_userp */,
               GRPCInferRequest::InferComplete,
               reinterpret_cast<void*>(grpc_infer_request));
           if (err != nullptr) {
